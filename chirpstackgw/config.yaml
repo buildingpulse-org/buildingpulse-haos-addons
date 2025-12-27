@@ -1,0 +1,43 @@
+## HA YAML file that defines how we config the add-on
+name: "ChirpStack Gateway Bridge"
+slug: "chirpstackgw" # local folder name needs to be the same as this slug
+description: "buildingPULSE ChirpStack v4 LoRaWAN Gateway Bridge"
+version: "4.1-gw-ha1"
+url: "https://www.chirpstack.io/"
+arch:
+  - amd64
+  - aarch64
+
+startup: services
+boot: auto
+# Set this to false to disable the Docker default system init.
+# Use this if the image has its own init system (Like s6-overlay).
+init: false
+
+# expose ports to HAOS.
+ports:
+  "1700/udp": null
+ports_description:
+  "1700/udp": "Chirpstack listen for Semtech UDP packet-forwarder"
+
+# Persist runtime data and allow optional rendered config inspection
+map:
+  - config:rw
+
+options:
+  mqtt_host: "core-mosquitto"
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
+
+  region: "us915_1"
+  log_level: "3"
+
+schema:
+  mqtt_host: str
+  mqtt_port: port
+  mqtt_username: str
+  mqtt_password: password
+
+  region: str
+  log_level: list(5|4|3|2|1|0)

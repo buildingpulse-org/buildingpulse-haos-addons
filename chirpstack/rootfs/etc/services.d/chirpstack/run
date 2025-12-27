@@ -1,0 +1,11 @@
+#!/usr/bin/with-contenv bash
+set -euo pipefail
+
+CFG_DIR="/data/chirpstack"
+
+## For ingress only.
+# Start ingress nginx (listens on ingress_port 8099, proxies to ChirpStack :8080)
+# nginx -g "daemon off;" -c /etc/nginx/ingress.conf &
+
+echo "Starting ChirpStack with config dir: ${CFG_DIR}"
+exec /usr/bin/chirpstack -c "${CFG_DIR}" 

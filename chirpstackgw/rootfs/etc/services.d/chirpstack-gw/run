@@ -1,0 +1,7 @@
+#!/usr/bin/with-contenv bash
+set -euo pipefail
+
+CFG_DIR="/data/chirpstack_gateway_brige"
+
+echo "Starting ChirpStack Gateway Bridge with config FILE: ${CFG_DIR}/99-ha-overrides-gw.toml"
+exec /usr/bin/chirpstack-gateway-bridge -c "${CFG_DIR}/99-ha-overrides-gw.toml"

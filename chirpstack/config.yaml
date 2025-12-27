@@ -1,0 +1,55 @@
+## HA YAML file that defines how we config the add-on
+name: "ChirpStack Core"
+slug: "chirpstack" # local folder name needs to be the same as this slug
+description: "buildingPULSE ChirpStack v4 LoRaWAN Network Server"
+version: "4.15.0-ha1"
+url: "https://www.chirpstack.io/"
+webui: http://[HOST]:[PORT:8080]
+arch:
+  - amd64
+  - aarch64
+
+startup: services
+boot: auto
+# Set this to false to disable the Docker default system init.
+# Use this if the image has its own init system (Like s6-overlay).
+init: false
+
+# Web UI via Home Assistant Ingress
+#ingress: true
+#ingress_port: 8099
+#panel_icon: mdi:router-wireless
+
+# expose ports to HAOS.
+ports:
+  "8080/tcp": null
+ports_description:
+  "8080/tcp": "Chirpstack"
+
+# Persist runtime data and allow optional rendered config inspection
+map:
+  - config:rw
+
+options:
+  mqtt_host: "core-mosquitto"
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
+
+  redis_host: "redis"
+  redis_port: 6379
+
+  region: "us915_1"
+  log_level: "info"
+
+schema:
+  mqtt_host: str
+  mqtt_port: port
+  mqtt_username: str
+  mqtt_password: password
+
+  redis_host: str
+  redis_port: port
+
+  region: str
+  log_level: list(trace|debug|info|warn|error)
