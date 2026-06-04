@@ -1,0 +1,7 @@
+#!/usr/bin/with-contenv bash
+set -euo pipefail
+
+CFG_DIR="/data/mqttqueue"
+
+echo "[mqtt-forwarder] Starting with config: ${CFG_DIR}/config.toml"
+exec python3 /usr/bin/mqttqueue.py "${CFG_DIR}/config.toml"

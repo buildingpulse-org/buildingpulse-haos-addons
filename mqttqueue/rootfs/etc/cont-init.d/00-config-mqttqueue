@@ -1,0 +1,142 @@
+#!/usr/bin/with-contenv bash
+set -euo pipefail
+
+CFG_DIR="/data/mqttqueue"
+RENDER_DIR="/config/mqttqueue_rendered"
+
+mkdir -p "${CFG_DIR}"
+mkdir -p "${RENDER_DIR}"
+
+# --------------------------------------------------------------------
+# 1) Read Home Assistant add-on options
+# --------------------------------------------------------------------
+MQTT_HOST="$(jq -r '.mqtt_host'              /data/options.json)"
+MQTT_PORT="$(jq -r '.mqtt_port'              /data/options.json)"
+MQTT_USER="$(jq -r '.mqtt_username'          /data/options.json)"
+MQTT_PASS="$(jq -r '.mqtt_password'          /data/options.json)"
+
+MQTT_TLS="$(jq -r '.mqtt_tls'               /data/options.json)"
+MQTT_CA_FILE="$(jq -r '.mqtt_ca_file'       /data/options.json)"
+MQTT_VERIFY_CA="$(jq -r '.mqtt_verify_ca'   /data/options.json)"
+MQTT_TLS_HOST="$(jq -r '.mqtt_tls_hostname' /data/options.json)"
+
+MQTT_CERTFILE="$(jq -r '.mqtt_certfile'             /data/options.json)"
+MQTT_KEYFILE="$(jq -r '.mqtt_keyfile'               /data/options.json)"
+MQTT_KEYFILE_PASS="$(jq -r '.mqtt_keyfile_password' /data/options.json)"
+
+SQLITE_FILE="$(jq -r '.sqlite_file'         /data/options.json)"
+LOG_LEVEL="$(jq -r '.log_level'             /data/options.json)"
+
+# --------------------------------------------------------------------
+# 2) Startup banner
+# --------------------------------------------------------------------
+echo "[mqtt-forwarder] ===== Home Assistant MQTT Queue Forwarder Add-on ====="
+echo "[mqtt-forwarder] MQTT broker : ${MQTT_HOST}:${MQTT_PORT}"
+echo "[mqtt-forwarder] TLS         : ${MQTT_TLS}"
+echo "[mqtt-forwarder] SQLite      : ${SQLITE_FILE}"
+echo "[mqtt-forwarder] Log level   : ${LOG_LEVEL}"
+echo "[mqtt-forwarder] Config dir  : ${CFG_DIR}"
+
+# --------------------------------------------------------------------
+# 3) Validate cert/key pairing early so the error is obvious in logs
+# --------------------------------------------------------------------
+if [ -n "${MQTT_CERTFILE}" ] && [ -z "${MQTT_KEYFILE}" ]; then
+    echo "[mqtt-forwarder] ERROR: mqtt_certfile is set but mqtt_keyfile is empty."
+    exit 1
+fi
+if [ -z "${MQTT_CERTFILE}" ] && [ -n "${MQTT_KEYFILE}" ]; then
+    echo "[mqtt-forwarder] ERROR: mqtt_keyfile is set but mqtt_certfile is empty."
+    exit 1
+fi
+if { [ -n "${MQTT_CERTFILE}" ] || [ -n "${MQTT_KEYFILE}" ]; } && [ "${MQTT_TLS}" != "true" ]; then
+    echo "[mqtt-forwarder] ERROR: mqtt_certfile/mqtt_keyfile require mqtt_tls: true."
+    exit 1
+fi
+
+# --------------------------------------------------------------------
+# 4) Generate config.toml
+# --------------------------------------------------------------------
+CONFIG_FILE="${CFG_DIR}/config.toml"
+
+cat > "${CONFIG_FILE}" <<EOF
+# ─────────────────────────────────────────────────────────────────────────────
+# mqtt_forwarder  –  config.toml
+# --------------------------------------------------------------
+# Home Assistant managed — regenerated on every start, do not edit manually
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── MQTT broker ───────────────────────────────────────────────────────────────
+[mqtt]
+host     = "${MQTT_HOST}"
+port     = ${MQTT_PORT}
+
+# ── Authentication ────────────────────────────────────────────────────────────
+# Option A – username / password (MQTT protocol level)
+username = "${MQTT_USER}"
+password = "${MQTT_PASS}"
+
+# Option B – client certificate (TLS level; requires tls = true)
+# Both certfile and keyfile must be set together, or both left empty.
+certfile         = "${MQTT_CERTFILE}"   # e.g. "/etc/mqtt/client.crt"
+keyfile          = "${MQTT_KEYFILE}"    # e.g. "/etc/mqtt/client.key"
+keyfile_password = "${MQTT_KEYFILE_PASS}"  # passphrase if the private key is encrypted; omit otherwise
+
+# Options A and B are independent: some brokers require both, most need only one.
+
+# ── TLS / SSL ─────────────────────────────────────────────────────────────────
+tls       = ${MQTT_TLS}    # set true to enable TLS (use port 8883 for standard TLS)
+
+# Path to the CA certificate file that signed the broker's certificate.
+# Leave empty to use the system's default CA store.
+ca_file   = "${MQTT_CA_FILE}"    # e.g. "/etc/ssl/certs/my-broker-ca.pem"
+
+# Set false to disable certificate and hostname verification.
+# WARNING: disabling verification is insecure; only use for testing.
+verify_ca = ${MQTT_VERIFY_CA}
+
+# When the broker is behind NAT or port-forwarding, the TCP connection goes to
+# a local address (e.g. 192.168.10.1) but the TLS certificate is issued for the
+# broker's real public hostname.  Set tls_hostname to that real hostname so that
+# both SNI and certificate CN/SAN verification use the correct name.
+#
+# Leave empty (or omit) to verify against the value of host above.
+#
+# Only takes effect when tls = true and verify_ca = true.
+tls_hostname = "${MQTT_TLS_HOST}"    # e.g. "mqtt.server.com"
+
+# ── SQLite queue database ─────────────────────────────────────────────────────
+[sqlite]
+file = "${SQLITE_FILE}"    # path to the SQLite file containing mqtt_queue
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+[log]
+# One of: trace | debug | info | warn | error
+level = "${LOG_LEVEL}"
+
+# ── Connection behaviour ──────────────────────────────────────────────────────
+# How long to wait for the TCP handshake before giving up and backing off.
+# Without a timeout, a silently-dropped SYN (dead port-forward, firewall
+# black-hole) blocks for the full OS TCP retry budget (15-127 s on Linux).
+connect_timeout = 10    # seconds; default 10
+
+# MQTT keepalive interval.  paho declares the connection dead if nothing is
+# heard from the broker within keepalive x 1.5 s, so this controls how quickly
+# a silently-dropped established connection is detected.
+# 60 s -> up to 90 s to detect failure;  10 s -> detected within 15 s.
+keepalive = 10          # seconds; default 10
+EOF
+
+# --------------------------------------------------------------------
+# 5) Mirror rendered config for inspection
+# --------------------------------------------------------------------
+cp -f "${CONFIG_FILE}" "${RENDER_DIR}/config.toml"
+
+# --------------------------------------------------------------------
+# 6) Final startup summary
+# --------------------------------------------------------------------
+echo "[mqtt-forwarder] Startup summary:"
+echo "[mqtt-forwarder]  MQTT    : ${MQTT_HOST}:${MQTT_PORT}"
+echo "[mqtt-forwarder]  TLS     : ${MQTT_TLS}  verify_ca=${MQTT_VERIFY_CA}  hostname=${MQTT_TLS_HOST:-<same as host>}"
+echo "[mqtt-forwarder]  SQLite  : ${SQLITE_FILE}"
+echo "[mqtt-forwarder]  Config  : ${CONFIG_FILE}"
+echo "[mqtt-forwarder] ==========================================="

@@ -1,0 +1,68 @@
+## HA YAML file that defines how we config the add-on
+name: "MQTT Queue Forwarder"
+slug: "mqttqueue"          # local folder name must match this slug
+description: "Reads messages from a local SQLite queue and forwards them to an MQTT broker at QOS-2"
+version: "1.0.0"
+url: "https://github.com/yourorg/mqtt_forwarder"
+arch:
+  - amd64
+  - aarch64
+  - armv7
+
+startup: services
+boot: auto
+init: false
+
+map:
+  - config:rw
+
+options:
+  # ── MQTT broker ──────────────────────────────────────────────────────────
+  mqtt_host: "localhost"
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
+
+  # ── TLS ──────────────────────────────────────────────────────────────────
+  # Set mqtt_tls to true and use port 8883 for encrypted connections.
+  mqtt_tls: false
+  mqtt_ca_file: ""              # path to CA cert; empty = system CA store
+  mqtt_verify_ca: true          # set false only for testing (insecure)
+  mqtt_tls_hostname: ""         # real broker hostname when behind NAT/port-forward
+
+  # ── Client certificate auth (alternative to username/password) ────────────
+  # Both certfile and keyfile must be set together, or both left empty.
+  # Requires mqtt_tls: true.
+  mqtt_certfile: ""
+  mqtt_keyfile: ""
+  mqtt_keyfile_password: ""     # only needed if the private key is encrypted
+
+  # ── SQLite queue ─────────────────────────────────────────────────────────
+  sqlite_file: "/config/mqtt_queue.db"
+
+  # ── Logging ──────────────────────────────────────────────────────────────
+  log_level: "info"
+
+schema:
+  # ── MQTT broker ──────────────────────────────────────────────────────────
+  mqtt_host: str
+  mqtt_port: port
+  mqtt_username: str
+  mqtt_password: password
+
+  # ── TLS ──────────────────────────────────────────────────────────────────
+  mqtt_tls: bool
+  mqtt_ca_file: str?
+  mqtt_verify_ca: bool
+  mqtt_tls_hostname: str?
+
+  # ── Client certificate auth ───────────────────────────────────────────────
+  mqtt_certfile: str?
+  mqtt_keyfile: str?
+  mqtt_keyfile_password: password?
+
+  # ── SQLite queue ─────────────────────────────────────────────────────────
+  sqlite_file: str
+
+  # ── Logging ──────────────────────────────────────────────────────────────
+  log_level: list(trace|debug|info|warn|error)

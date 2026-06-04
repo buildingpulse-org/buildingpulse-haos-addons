@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# mqtt_forwarder  –  config.toml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── MQTT broker ───────────────────────────────────────────────────────────────
+[mqtt]
+host     = "192.168.10.1"
+port     = 1883
+
+# ── Authentication ────────────────────────────────────────────────────────────
+# Option A – username / password (MQTT protocol level)
+username = ""          # leave empty for anonymous access
+password = ""
+
+# Option B – client certificate (TLS level; requires tls = true)
+# Both certfile and keyfile must be set together, or both left empty.
+certfile = ""               # e.g. "/etc/mqtt/client.crt"
+keyfile  = ""               # e.g. "/etc/mqtt/client.key"
+keyfile_password = ""       # passphrase if the private key is encrypted; omit otherwise
+
+# Options A and B are independent: some brokers require both, most need only one.
+
+# ── TLS / SSL ─────────────────────────────────────────────────────────────────
+tls       = true      # set true to enable TLS (use port 8883 for standard TLS)
+
+# Path to the CA certificate file that signed the broker's certificate.
+# Leave empty to use the system's default CA store.
+ca_file   = ""         # e.g. "/etc/ssl/certs/my-broker-ca.pem"
+
+# Set false to disable certificate and hostname verification.
+# WARNING: disabling verification is insecure; only use for testing.
+verify_ca = true
+
+# When the broker is behind NAT or port-forwarding, the TCP connection goes to
+# a local address (e.g. 192.168.10.1) but the TLS certificate is issued for the
+# broker's real public hostname.  Set tls_hostname to that real hostname so that
+# both SNI and certificate CN/SAN verification use the correct name.
+#
+# Leave empty (or omit) to verify against the value of `host` above.
+#
+# Only takes effect when tls = true and verify_ca = true.
+tls_hostname = ""           # e.g. "mqtt.server.com"
+
+# ── SQLite queue database ─────────────────────────────────────────────────────
+[sqlite]
+file = "/homeassistant/mqtt_queue.db"      # path to the SQLite file containing mqtt_queue
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+[log]
+# One of: trace | debug | info | warn | error
+level = "info"
+
+# ── Connection behaviour ──────────────────────────────────────────────────────
+# How long to wait for the TCP handshake before giving up and backing off.
+# Without a timeout, a silently-dropped SYN (dead port-forward, firewall
+# black-hole) blocks for the full OS TCP retry budget (15–127 s on Linux).
+connect_timeout = 10    # seconds; default 10
+ 
+# MQTT keepalive interval.  paho declares the connection dead if nothing is
+# heard from the broker within keepalive × 1.5 s, so this controls how quickly
+# a silently-dropped *established* connection is detected.
+# 60 s → up to 90 s to detect failure;  10 s → detected within 15 s.
+keepalive = 10          # seconds; default 10

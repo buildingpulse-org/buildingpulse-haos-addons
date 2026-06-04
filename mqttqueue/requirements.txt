@@ -1,0 +1,7 @@
+# mqtt_forwarder dependencies
+
+# MQTT client — works with both v1 (1.6.x) and v2 (2.x)
+paho-mqtt>=1.6
+
+# TOML parser — only needed on Python < 3.11 (tomllib is in stdlib from 3.11)
+tomli>=2.0.0; python_version < "3.11"

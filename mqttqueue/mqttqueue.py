@@ -5,9 +5,10 @@ mqtt_forwarder.py
 Single-threaded daemon that reads un-sent rows from the SQLite
 `mqtt_queue` table and publishes them to an MQTT broker at QOS-2.
 
-Each message is published synchronously: the call does not return until
-the broker has confirmed delivery via PUBCOMP, so no in-flight state is
-needed.
+Up to MAX_IN_FLIGHT messages are kept in-flight simultaneously so the
+QOS-2 four-way handshake for one message overlaps with the dispatch of
+the next, giving much higher throughput than one-at-a-time publishing.
+on_publish() marks each row sent as its PUBCOMP arrives.
 
 Runs until SIGINT (Ctrl-C) or SIGTERM.
 
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import socket as _socket
 import sqlite3
 import ssl
 import sys
@@ -92,14 +94,33 @@ def _setup_logging(level_name: str) -> None:
 # (single-threaded → no locks; callbacks fire inside client.loop() calls)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_connected: bool = False
-_running:   bool = True
+_connected:     bool          = False
+_running:       bool          = True
+_in_flight:     dict[int,int] = {}     # paho mid  →  sqlite row-id
+_in_flight_ids: set[int]      = set()  # sqlite row-ids currently in-flight
 
 # ── tunables ──────────────────────────────────────────────────────────────────
-LOOP_TIMEOUT_S   = 0.05    # paho loop() socket-wait ceiling per call
-IDLE_SLEEP_S     = 0.10    # sleep when the SQLite queue is empty
-PUBLISH_TIMEOUT_S = 14.0   # wait up to 14 s for PUBCOMP (also used as drain budget on shutdown)
+MAX_IN_FLIGHT    = 20      # max simultaneous un-confirmed QOS-2 publishes
+LOOP_TIMEOUT_S   = 0.5    # paho loop() socket-wait ceiling per call
+IDLE_SLEEP_S     = 1.0    # sleep when the SQLite queue is empty
+DRAIN_TIMEOUT_S  = 14.0    # budget to drain in-flight messages on shutdown
 MAX_RECONNECT_S  = 60      # cap on exponential back-off
+
+# Both of the following are overridden by [mqtt] connect_timeout / keepalive
+# in config.toml, so these are just the in-code defaults.
+#
+# CONNECT_TIMEOUT_S: how long socket.create_connection() is allowed to block
+#   before we give up and back off.  Without this, a silently-dropped SYN
+#   (firewall, dead port-forward) causes client.connect() to hang for the full
+#   OS TCP retry budget (~15-127 s depending on kernel settings).
+#
+# KEEPALIVE_S: MQTT protocol keepalive sent to the broker.  paho treats the
+#   connection as dead if no packet arrives within keepalive * 1.5 seconds, so
+#   this also controls how quickly a silently-dropped *established* connection
+#   is detected.  60 s (old hardcoded value) → up to 90 s to detect.
+#   10 s → detected within 15 s.
+CONNECT_TIMEOUT_S = 10     # seconds before TCP connect attempt is abandoned
+KEEPALIVE_S       = 10     # MQTT keepalive interval in seconds
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,8 +142,38 @@ signal.signal(signal.SIGTERM, _handle_signal)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MQTT callbacks  (two flavours: paho v2 and v1)
+# In-flight helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _mark_sent(db: sqlite3.Connection, mid: int) -> None:
+    """Called from on_publish: mark the row whose PUBCOMP just arrived."""
+    row_id = _in_flight.pop(mid, None)
+    if row_id is None:
+        log.log(TRACE, "on_publish: mid=%d not tracked (already handled).", mid)
+        return
+    _in_flight_ids.discard(row_id)
+    try:
+        db.execute("UPDATE mqtt_queue SET sent=1 WHERE id=?", (row_id,))
+        db.commit()
+        log.debug("Row %d marked sent (mid=%d).", row_id, mid)
+    except sqlite3.Error as exc:
+        log.error("DB error marking row %d sent: %s", row_id, exc)
+
+
+def _clear_in_flight() -> None:
+    """Drop tracking state on disconnect.
+
+    Rows that were in-flight but not yet confirmed remain sent=0 in SQLite,
+    so they will be re-fetched and re-published after reconnect.
+    """
+    if _in_flight:
+        log.warning(
+            "%d in-flight message(s) lost on disconnect – "
+            "they will be re-published after reconnect.",
+            len(_in_flight),
+        )
+    _in_flight.clear()
+    _in_flight_ids.clear()
 
 if _PAHO_V2:
     def _on_connect(client, userdata, connect_flags, reason_code, properties):   # noqa: ANN001
@@ -137,11 +188,15 @@ if _PAHO_V2:
     def _on_disconnect(client, userdata, disconnect_flags, reason_code, properties):  # noqa: ANN001
         global _connected
         _connected = False
+        _clear_in_flight()
         code = getattr(reason_code, "value", reason_code)
         if code == 0:
             log.info("Disconnected cleanly from broker.")
         else:
             log.warning("Unexpected disconnect: %s", reason_code)
+
+    def _on_publish(client, userdata, mid, reason_code, properties):  # noqa: ANN001
+        _mark_sent(userdata, mid)
 
 else:  # paho v1 ─────────────────────────────────────────────────────────────
     def _on_connect(client, userdata, flags, rc):     # type: ignore[misc]  # noqa: ANN001
@@ -156,10 +211,14 @@ else:  # paho v1 ─────────────────────
     def _on_disconnect(client, userdata, rc):         # type: ignore[misc]  # noqa: ANN001
         global _connected
         _connected = False
+        _clear_in_flight()
         if rc == 0:
             log.info("Disconnected cleanly from broker.")
         else:
             log.warning("Unexpected disconnect (rc=%d).", rc)
+
+    def _on_publish(client, userdata, mid):           # type: ignore[misc]  # noqa: ANN001
+        _mark_sent(userdata, mid)
 
 
 # ── paho internal log → our logger ───────────────────────────────────────────
@@ -196,15 +255,16 @@ def _open_db(path: str) -> sqlite3.Connection:
     return db
 
 
-def _fetch_next_unsent(db: sqlite3.Connection) -> sqlite3.Row | None:
-    """Return the single oldest un-sent row (by timestamp), or None if the queue is empty."""
+def _fetch_unsent(db: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+    """Return up to *limit* un-sent rows, oldest-timestamp first."""
     return db.execute(
         "SELECT id, ts, topic, message, retain "
         "FROM   mqtt_queue "
         "WHERE  sent = 0 "
         "ORDER  BY ts ASC "
-        "LIMIT  1",
-    ).fetchone()
+        "LIMIT  ?",
+        (limit,),
+    ).fetchall()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -253,13 +313,13 @@ class _SSLContextProxy:
 # MQTT client factory
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_client(cfg: dict) -> mqtt.Client:
+def _build_client(cfg: dict, db: sqlite3.Connection) -> mqtt.Client:
     mcfg = cfg.get("mqtt", {})
 
     kwargs: dict = dict(
         client_id     = "",            # let the broker assign one
         clean_session = True,
-        userdata      = None,
+        userdata      = db,
         protocol      = mqtt.MQTTv311,
     )
     if _PAHO_V2:
@@ -268,6 +328,7 @@ def _build_client(cfg: dict) -> mqtt.Client:
     client = mqtt.Client(**kwargs)
     client.on_connect    = _on_connect
     client.on_disconnect = _on_disconnect
+    client.on_publish    = _on_publish
     client.on_log        = _on_paho_log
 
     username = mcfg.get("username", "")
@@ -326,51 +387,6 @@ def _build_client(cfg: dict) -> mqtt.Client:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Synchronous QOS-2 publish
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _publish_sync(
-    client: mqtt.Client,
-    topic: str,
-    payload: str,
-    retain: bool,
-) -> bool:
-    """Publish a QOS-2 message and block until PUBCOMP is received.
-
-    Drives the paho network loop internally so no external loop() call is
-    needed while waiting.  Returns True on confirmed delivery, False if the
-    connection dropped, the forwarder is stopping, or a timeout occurred.
-    """
-    result = client.publish(topic, payload, qos=2, retain=retain)
-
-    if result.rc != mqtt.MQTT_ERR_SUCCESS:
-        log.warning("publish() rejected immediately (rc=%d).", result.rc)
-        return False
-
-    deadline = time.monotonic() + PUBLISH_TIMEOUT_S
-
-    while not result.is_published():
-        if time.monotonic() > deadline:
-            log.warning(
-                "QOS-2 PUBCOMP not received within %.0fs – "
-                "treating as failed.",
-                PUBLISH_TIMEOUT_S,
-            )
-            return False
-
-        rc = client.loop(timeout=LOOP_TIMEOUT_S)
-        if rc not in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN):
-            log.warning("loop() rc=%d during publish wait.", rc)
-            return False
-
-        if not _connected:
-            log.warning("Disconnected while waiting for PUBCOMP.")
-            return False
-
-    return True
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Main loop
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -392,13 +408,15 @@ def main() -> None:
     _setup_logging(cfg.get("log", {}).get("level", "info"))
 
     mcfg = cfg.get("mqtt", {})
-    host = mcfg.get("host", "localhost")
-    port = int(mcfg.get("port", 1883))
+    host             = mcfg.get("host", "localhost")
+    port             = int(mcfg.get("port", 1883))
+    connect_timeout  = int(mcfg.get("connect_timeout", CONNECT_TIMEOUT_S))
+    keepalive        = int(mcfg.get("keepalive",        KEEPALIVE_S))
 
     db_path = cfg.get("sqlite", {}).get("file", "queue.db")
 
     db     = _open_db(db_path)
-    client = _build_client(cfg)
+    client = _build_client(cfg, db)
 
     reconnect_delay = 1.0
     last_attempt    = -9_999.0   # trigger an immediate first connect attempt
@@ -423,9 +441,34 @@ def main() -> None:
                 host, port, int(reconnect_delay),
             )
             try:
-                # Always call connect() so the full TCP+MQTT handshake is
-                # redone cleanly each time.
-                client.connect(host, port, keepalive=60)
+                # Scope a socket-level connect timeout so that a silently
+                # dropped SYN (dead port-forward, firewall, etc.) raises
+                # TimeoutError after connect_timeout seconds instead of
+                # blocking for the full OS TCP retry budget (~15-127 s).
+                # setdefaulttimeout() applies to newly created sockets, so
+                # it catches the create_connection() call paho makes inside
+                # connect().  We clear the timeout from the live socket
+                # immediately afterward so normal MQTT I/O is unaffected.
+                prev_timeout = _socket.getdefaulttimeout()
+                _socket.setdefaulttimeout(connect_timeout)
+                try:
+                    client.connect(host, port, keepalive=keepalive)
+                finally:
+                    _socket.setdefaulttimeout(prev_timeout)
+                # Remove the connect timeout from the socket paho now owns;
+                # blocking mode is correct — paho gates recv/send with select().
+                live = client.socket()
+                if live is not None:
+                    live.settimeout(None)
+            except TimeoutError:
+                log.warning(
+                    "Connect to %s:%d timed out after %ds.  "
+                    "Retry in %ds.",
+                    host, port, connect_timeout, int(reconnect_delay),
+                )
+                last_attempt    = time.monotonic()
+                reconnect_delay = min(reconnect_delay * 2, MAX_RECONNECT_S)
+                continue
             except OSError as exc:
                 log.warning(
                     "Connect failed: %s.  Retry in %ds.", exc, int(reconnect_delay)
@@ -452,47 +495,69 @@ def main() -> None:
         if rc not in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN):
             log.warning("paho loop() returned rc=%d – reconnecting.", rc)
             _connected = False
+            _clear_in_flight()
             continue
 
         if not _connected:
             # on_disconnect() fired inside loop() above; go back to top.
             continue
 
-        # ── fetch and publish the next un-sent row ────────────────────────────
-        row = _fetch_next_unsent(db)
-        if row is None:
+        # ── fill in-flight slots with new rows ────────────────────────────────
+        slots = MAX_IN_FLIGHT - len(_in_flight)
+        if slots <= 0:
+            # All slots full; wait for on_publish callbacks to free some.
+            continue
+
+        rows = _fetch_unsent(db, limit=slots)
+        if not rows:
             time.sleep(IDLE_SLEEP_S)
             continue
 
-        log.debug(
-            "Publishing  row=%-6d  topic=%s",
-            row["id"], row["topic"],
-        )
-        log.log(TRACE,
-            "Publishing  row=%-6d  topic=%s  message=%s",
-            row["id"], row["topic"], row["message"],
-        )
+        for row in rows:
+            if row["id"] in _in_flight_ids:
+                continue   # already queued from a prior iteration
 
-        ok = _publish_sync(
-            client,
-            topic   = row["topic"],
-            payload = row["message"],
-            retain  = bool(row["retain"]),
-        )
-
-        if ok:
-            try:
-                db.execute("UPDATE mqtt_queue SET sent=1 WHERE id=?", (row["id"],))
-                db.commit()
-                log.debug("Row %d marked sent.", row["id"])
-            except sqlite3.Error as exc:
-                log.error("DB error marking row %d sent: %s", row["id"], exc)
-        else:
-            log.warning(
-                "Publish failed for row %d – will retry after reconnect.", row["id"]
+            log.debug("Publishing  row=%-6d  topic=%s", row["id"], row["topic"])
+            log.log(TRACE,
+                "Publishing  row=%-6d  topic=%s  message=%s",
+                row["id"], row["topic"], row["message"],
             )
 
+            result = client.publish(
+                topic   = row["topic"],
+                payload = row["message"],
+                qos     = 2,
+                retain  = bool(row["retain"]),
+            )
+
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                _in_flight[result.mid]  = row["id"]
+                _in_flight_ids.add(row["id"])
+            else:
+                log.warning(
+                    "publish() rc=%d for row %d – will retry.", result.rc, row["id"]
+                )
+                if result.rc == mqtt.MQTT_ERR_NO_CONN:
+                    _connected = False
+                    _clear_in_flight()
+                break   # don't attempt more rows this iteration
+
     # ── graceful shutdown ─────────────────────────────────────────────────────
+    if _in_flight:
+        log.info(
+            "Draining %d in-flight message(s) (up to %ds) …",
+            len(_in_flight), int(DRAIN_TIMEOUT_S),
+        )
+        deadline = time.monotonic() + DRAIN_TIMEOUT_S
+        while _in_flight and time.monotonic() < deadline:
+            client.loop(timeout=0.1)
+        if _in_flight:
+            log.warning(
+                "%d message(s) unconfirmed at shutdown; "
+                "they remain sent=0 and will be re-sent on next run.",
+                len(_in_flight),
+            )
+
     if _connected:
         client.disconnect()
         client.loop(timeout=1.0)
