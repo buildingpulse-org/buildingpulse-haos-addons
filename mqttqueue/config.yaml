@@ -1,9 +1,9 @@
 ## HA YAML file that defines how we config the add-on
 name: "MQTT Queue Forwarder"
-slug: "mqttqueue"          # local folder name must match this slug
+slug: "mqttqueue" # local folder name must match this slug
 description: "Reads messages from a local SQLite queue and forwards them to an MQTT broker at QOS-2"
 version: "1.0.0"
-url: "https://github.com/yourorg/mqtt_forwarder"
+url: "https://github.com/buildingpulse-org/buildingpulse-haos-addons/tree/main/mqttqueue"
 arch:
   - amd64
   - aarch64
@@ -13,56 +13,65 @@ startup: services
 boot: auto
 init: false
 
+# config:rw mounts /config (the HA config directory) so the SQLite queue
+# file can live alongside other HA data and survive add-on updates.
 map:
   - config:rw
 
 options:
-  # ── MQTT broker ──────────────────────────────────────────────────────────
-  mqtt_host: "localhost"
+  # ── MQTT broker ───────────────────────────────────────────────────────────
+  # Use "core-mosquitto" to target the Mosquitto add-on running on this host.
+  mqtt_host: "core-mosquitto"
   mqtt_port: 1883
   mqtt_username: ""
   mqtt_password: ""
 
-  # ── TLS ──────────────────────────────────────────────────────────────────
-  # Set mqtt_tls to true and use port 8883 for encrypted connections.
+  # ── TLS ───────────────────────────────────────────────────────────────────
+  # Enable TLS when connecting to a remote broker over an untrusted network.
+  # Change mqtt_port to 8883 (the standard MQTT-over-TLS port) at the same time.
+  # Leave mqtt_ca_file empty to trust the system CA store (public brokers).
+  # Set mqtt_ca_file to the path of a PEM file for self-signed / private CAs.
+  # Set mqtt_tls_hostname if the broker sits behind NAT or port-forwarding and
+  # its certificate is issued for a different name than mqtt_host.
   mqtt_tls: false
-  mqtt_ca_file: ""              # path to CA cert; empty = system CA store
-  mqtt_verify_ca: true          # set false only for testing (insecure)
-  mqtt_tls_hostname: ""         # real broker hostname when behind NAT/port-forward
+  mqtt_ca_file: ""
+  mqtt_verify_ca: true
+  mqtt_tls_hostname: ""
 
-  # ── Client certificate auth (alternative to username/password) ────────────
-  # Both certfile and keyfile must be set together, or both left empty.
-  # Requires mqtt_tls: true.
+  # ── Client certificate auth ───────────────────────────────────────────────
+  # Alternative (or addition) to username/password: identify the client with
+  # an X.509 certificate.  Both certfile and keyfile must be set together, or
+  # both left empty.  Requires mqtt_tls: true.
+  # Paths must be accessible inside the container (e.g. under /config/).
   mqtt_certfile: ""
   mqtt_keyfile: ""
-  mqtt_keyfile_password: ""     # only needed if the private key is encrypted
+  mqtt_keyfile_password: ""
 
-  # ── SQLite queue ─────────────────────────────────────────────────────────
+  # ── SQLite queue ──────────────────────────────────────────────────────────
+  # Full path to the SQLite database that contains the mqtt_queue table.
+  # /config/ is the HA config directory, persisted across restarts and updates.
   sqlite_file: "/config/mqtt_queue.db"
 
-  # ── Logging ──────────────────────────────────────────────────────────────
+  # ── Logging ───────────────────────────────────────────────────────────────
+  # info is recommended for normal use.
+  # debug shows every publish attempt; trace also logs message payloads.
   log_level: "info"
 
 schema:
-  # ── MQTT broker ──────────────────────────────────────────────────────────
   mqtt_host: str
   mqtt_port: port
   mqtt_username: str
   mqtt_password: password
 
-  # ── TLS ──────────────────────────────────────────────────────────────────
   mqtt_tls: bool
   mqtt_ca_file: str?
   mqtt_verify_ca: bool
   mqtt_tls_hostname: str?
 
-  # ── Client certificate auth ───────────────────────────────────────────────
   mqtt_certfile: str?
   mqtt_keyfile: str?
   mqtt_keyfile_password: password?
 
-  # ── SQLite queue ─────────────────────────────────────────────────────────
   sqlite_file: str
 
-  # ── Logging ──────────────────────────────────────────────────────────────
   log_level: list(trace|debug|info|warn|error)

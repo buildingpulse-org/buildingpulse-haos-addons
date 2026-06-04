@@ -1,0 +1,89 @@
+configuration:
+  mqtt_host:
+    name: MQTT Broker Host
+    description: >-
+      Hostname or IP address of the MQTT broker.
+      Use "core-mosquitto" to target the Mosquitto add-on on this same host.
+
+  mqtt_port:
+    name: MQTT Broker Port
+    description: >-
+      Port number of the MQTT broker.
+      Standard ports: 1883 (plain-text), 8883 (TLS).
+      Change to 8883 when enabling TLS.
+
+  mqtt_username:
+    name: Username
+    description: >-
+      MQTT username. Leave empty for anonymous access.
+
+  mqtt_password:
+    name: Password
+    description: >-
+      MQTT password. Leave empty for anonymous access.
+
+  mqtt_tls:
+    name: Enable TLS
+    description: >-
+      Encrypt the connection to the broker using TLS.
+      Change the port to 8883 at the same time.
+      Required when using client certificate authentication.
+
+  mqtt_ca_file:
+    name: CA Certificate File
+    description: >-
+      Path to the PEM file for the Certificate Authority that signed the
+      broker's certificate. Leave empty to trust the system CA store, which
+      covers most public brokers. Set this for self-signed or private CAs,
+      e.g. /config/certs/my-broker-ca.pem.
+
+  mqtt_verify_ca:
+    name: Verify CA Certificate
+    description: >-
+      Verify the broker's certificate against the supplied CA file above. Keep this enabled in
+      production. Disable only for local testing with self-signed certs when
+      you cannot supply a CA file.
+
+  mqtt_tls_hostname:
+    name: TLS Verification Hostname
+    description: >-
+      Override the hostname used for TLS certificate verification. Set this
+      when the broker is behind NAT or port-forwarding and mqtt_host is a
+      local IP, but the broker's certificate is issued for its public name
+      (e.g. mqtt.example.com). Leave empty to verify against mqtt_host.
+
+  mqtt_certfile:
+    name: Client Certificate File
+    description: >-
+      Path to the client certificate (PEM) for mutual TLS authentication.
+      Must be set together with the Client Key File. Requires TLS enabled.
+      e.g. /config/certs/client.crt
+
+  mqtt_keyfile:
+    name: Client Key File
+    description: >-
+      Path to the private key (PEM) matching the client certificate.
+      Must be set together with the Client Certificate File.
+      e.g. /config/certs/client.key
+
+  mqtt_keyfile_password:
+    name: Client Key Passphrase
+    description: >-
+      Passphrase to decrypt the client private key. Leave empty if the key
+      file is not encrypted.
+
+  sqlite_file:
+    name: SQLite Database Path
+    description: >-
+      Full path to the SQLite database containing the mqtt_queue table.
+      The /config/ directory is persisted across restarts and add-on updates,
+      so /config/mqtt_queue.db is a safe default.
+
+  log_level:
+    name: Log Level
+    description: >-
+      Controls how much is written to the add-on log.
+      info is recommended for normal use.
+      debug logs every publish attempt and connection event.
+      trace also logs the full message payload of every queued row.
+      warn and error reduce output to problems only.

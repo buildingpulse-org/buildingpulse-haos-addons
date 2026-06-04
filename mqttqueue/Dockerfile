@@ -24,12 +24,10 @@ RUN \
         py3-pip=25.1.1-r1 \
         py3-wheel=0.46.3-r0 \
         python3=3.12.13-r0 \
-        yq-go=4.49.2-r5 \
     \
     && pip install -r /tmp/requirements.txt \
     \
     && cd /usr/lib/python3.12/site-packages/ \
-#    && patch -p1 < /patches/force_recompile.patch \
     \
     && find /usr \
         \( -type d -a -name test -o -name tests -o -name '__pycache__' \) \
@@ -72,5 +70,5 @@ LABEL \
     org.opencontainers.image.revision=${BUILD_REF} \
     org.opencontainers.image.version=${BUILD_VERSION}
 
-RUN chmod +x /etc/cont-init.d/00-config-gw \
-    && chmod +x /etc/services.d/chirpstack-gw/run
+RUN chmod +x /etc/cont-init.d/00-config-mqttqueue \
+    && chmod +x /etc/services.d/mqttqueue/run

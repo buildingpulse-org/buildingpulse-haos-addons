@@ -54,6 +54,21 @@ if { [ -n "${MQTT_CERTFILE}" ] || [ -n "${MQTT_KEYFILE}" ]; } && [ "${MQTT_TLS}"
 fi
 
 # --------------------------------------------------------------------
+# 3b) Verify CA file is readable when explicitly configured
+# --------------------------------------------------------------------
+if [ "${MQTT_TLS}" = "true" ] && [ -n "${MQTT_CA_FILE}" ]; then
+    if [ ! -f "${MQTT_CA_FILE}" ]; then
+        echo "[mqtt-forwarder] ERROR: ca_file '${MQTT_CA_FILE}' does not exist."
+        exit 1
+    fi
+    if [ ! -r "${MQTT_CA_FILE}" ]; then
+        echo "[mqtt-forwarder] ERROR: ca_file '${MQTT_CA_FILE}' exists but is not readable (permission denied)."
+        exit 1
+    fi
+    echo "[mqtt-forwarder] CA file OK: ${MQTT_CA_FILE}"
+fi
+
+# --------------------------------------------------------------------
 # 4) Generate config.toml
 # --------------------------------------------------------------------
 CONFIG_FILE="${CFG_DIR}/config.toml"
