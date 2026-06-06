@@ -27,11 +27,11 @@ background, so your application never blocks waiting for the broker.
 
 ## Requirements
 
-A SQLite database accessible to the add-on (e.g. under `/config/`) containing
-an `mqtt_queue` table.  See the **Documentation** tab for the expected schema.
+A SQLite database accessible to the add-on (e.g. under `/homeassistant/`) containing an `mqtt_queue` table.  See the **Documentation** tab for the expected schema.
 
 ## Support
 
 For issues and questions, visit the [project repository][url].
 
-[url]: https://github.com/yourorg/mqtt_forwarder
+[url]: https://github.com/buildingpulse-org/buildingpulse-haos-addons/tree/main/mqttqueue
+
